@@ -34,6 +34,7 @@
 //! written into a stream that would decode as something else.
 
 use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
 
 use byteorder::WriteBytesExt;
 use facet::Facet;
@@ -278,14 +279,18 @@ fn write_struct<F: EndiannessImpl, W: WriteBytesExt>(
     Ok(())
 }
 
-fn write_map<F: EndiannessImpl, W: WriteBytesExt>(
+fn write_map<'mem, 'facet, F: EndiannessImpl, W: WriteBytesExt>(
     w: &mut W,
-    peek: Peek,
+    peek: Peek<'mem, 'facet>,
     depth: usize,
 ) -> Result<(), Error> {
     io::check_depth(depth)?;
     let map = peek.into_map().map_err(reflect_err)?;
-    for (key, value) in map.iter() {
+    // Collect into a `Vec` while suppressing `PeekMapIter`'s `Drop` via
+    // `ManuallyDrop` to avoid the double-free SIGABRT in `facet-reflect`.
+    let mut iter = ManuallyDrop::new(map.iter());
+    let entries: Vec<(Peek<'mem, 'facet>, Peek<'mem, 'facet>)> = iter.by_ref().collect();
+    for (key, value) in entries {
         let Some(value) = unwrap_option(value)? else {
             continue;
         };
