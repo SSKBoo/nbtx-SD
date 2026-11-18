@@ -17,6 +17,8 @@
 //!   quoted string, or its discriminant as an integer literal carrying the
 //!   suffix of the tag that would hold it (`2b`, `2s`, `2`, `2l`)
 
+use std::mem::ManuallyDrop;
+
 use bstr::ByteSlice;
 use facet::Facet;
 use facet_core::{Def, ScalarType, Type, UserType};
@@ -517,12 +519,20 @@ fn render_struct(out: &mut String, peek: Peek, depth: usize) -> Result<(), Error
     Ok(())
 }
 
-fn render_map(out: &mut String, peek: Peek, depth: usize) -> Result<(), Error> {
+fn render_map<'mem, 'facet>(
+    out: &mut String,
+    peek: Peek<'mem, 'facet>,
+    depth: usize,
+) -> Result<(), Error> {
     check_depth(depth)?;
     let map = peek.into_map().map_err(reflect_err)?;
+    // Collect into a `Vec` while suppressing `PeekMapIter`'s `Drop` via
+    // `ManuallyDrop` to avoid the double-free SIGABRT in `facet-reflect`.
+    let mut iter = ManuallyDrop::new(map.iter());
+    let entries: Vec<(Peek<'mem, 'facet>, Peek<'mem, 'facet>)> = iter.by_ref().collect();
     out.push('{');
     let mut first = true;
-    for (key, value) in map.iter() {
+    for (key, value) in entries {
         // Skip `None` optional values.
         let value = if let Def::Option(_) = value.shape().def {
             match value.into_option().map_err(reflect_err)?.value() {
